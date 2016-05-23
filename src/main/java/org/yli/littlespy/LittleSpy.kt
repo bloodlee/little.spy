@@ -1,7 +1,7 @@
 package org.yli.littlespy
 
-import com.sun.jdi.Bootstrap
-import com.sun.jdi.VirtualMachine
+import com.google.common.collect.Lists
+import com.sun.jdi.*
 import com.sun.jdi.connect.AttachingConnector
 import com.sun.jdi.event.EventSet
 import com.sun.jdi.event.ExceptionEvent
@@ -15,6 +15,7 @@ import org.yli.littlespy.exceptions.LittleSpyException
 import org.yli.littlespy.utilities.Utilities
 import org.yli.littlespy.utilities.dumpHeap
 import org.yli.littlespy.utilities.dumpStack
+import java.util.*
 
 /**
  * Created by yli on 5/21/2016.
@@ -35,8 +36,6 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
     var listeningThread : Thread? = null
 
     val forPattern = DateTimeFormat.forPattern("yyyy_MM_dd_H_m_s")
-
-    var extraClassLoader : ClassLoader? = null
 
     init {
         LOGGER.debug("LittleSpy was just created.")
@@ -113,8 +112,8 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
         for (exceptionClassName in config.getExceptionList()) {
             var refTypes = vm!!.classesByName(exceptionClassName)
 
-            if (refTypes.isEmpty() && extraClassLoader != null) {
-                extraClassLoader!!.loadClass(exceptionClassName)
+            if (refTypes.isEmpty()) {
+                tryToLoadClass(exceptionClassName)
                 refTypes = vm!!.classesByName(exceptionClassName)
             }
 
@@ -184,6 +183,91 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
         listeningThread!!.start()
 
         Thread.sleep(1000)
+    }
+
+
+    private fun tryToLoadClass(exceptionClassName: String) {
+        var mainThread : ThreadReference? = null
+        for (thread in vm!!.allThreads()) {
+            if ("main".equals(thread.name())) {
+                mainThread = thread
+                break
+            }
+        }
+        
+        val classLoaders : MutableSet<ClassLoaderReference> = mutableSetOf()
+        for (classRef in vm!!.allClasses()) {
+            val element = classRef.classLoader()
+            if (element != null) {
+                classLoaders.add(element)
+            }
+        }
+
+        val classLoaderClasses : MutableSet<ReferenceType> = mutableSetOf()
+
+        val classLoaderNames = Lists.newArrayList<String>(
+                "java.lang.ClassLoader", "java.security.SecureClassLoader",
+                "sun.misc.Launcher\$AppClassLoader", "sun.misc.Launcher\$ExtClassLoader",
+                "java.net.URLClassLoader")
+
+        for (name in classLoaderNames) {
+            val classesByName = vm!!.classesByName(name)
+            if (!classesByName.isEmpty()) {
+                for (aClass in classesByName) {
+                    classLoaderClasses.add(aClass)
+                }
+            }
+        }
+
+        for (classLoaderClass in classLoaderClasses) {
+            val methodsByName = classLoaderClass.methodsByName("loadClass", "(Ljava/lang/String;Z)Ljava/lang/Class;")
+
+            val instances = classLoaderClass.instances(20)
+
+            for (instance in instances) {
+                for (method in methodsByName) {
+                    var arguments = ArrayList<Value>()
+                    arguments.add(vm!!.mirrorOf(exceptionClassName))
+                    arguments.add(vm!!.mirrorOf(true))
+
+                    try {
+                        var thread = instance.owningThread()
+
+                        if (thread == null) {
+                            thread = mainThread
+                        }
+
+                        instance.invokeMethod(thread, method, arguments, 0)
+                    } catch (e: Throwable) {
+                        // swallow the exceptions
+                        LOGGER.debug("this method doesn't match", e)
+                    }
+                }
+            }
+        }
+
+        for (classLoaderRef in classLoaders) {
+            val referenceType = classLoaderRef.referenceType()
+            val methodsByName = referenceType.methodsByName("loadClass", "(Ljava/lang/String;Z)Ljava/lang/Class;")
+
+            for (method in methodsByName) {
+                var arguments = ArrayList<Value>()
+                arguments.add(vm!!.mirrorOf(exceptionClassName))
+                arguments.add(vm!!.mirrorOf(true))
+
+                try {
+                    var thread = classLoaderRef.owningThread()
+
+                    if (thread == null) {
+                        thread = mainThread
+                    }
+                    classLoaderRef.invokeMethod(thread, method, arguments, 0)
+                } catch (e: Throwable) {
+                    // swallow the exception
+                    LOGGER.debug("this method doesn't match", e)
+                }
+            }
+        }
     }
 
     private fun dumpHeapAndStack() {
