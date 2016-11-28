@@ -3,9 +3,8 @@ package org.yli.littlespy
 import com.google.common.collect.Lists
 import com.sun.jdi.*
 import com.sun.jdi.connect.AttachingConnector
-import com.sun.jdi.event.EventSet
-import com.sun.jdi.event.ExceptionEvent
-import com.sun.jdi.event.VMDisconnectEvent
+import com.sun.jdi.event.*
+import com.sun.jdi.request.ClassPrepareRequest
 import com.sun.jdi.request.EventRequest
 import com.sun.jdi.request.ExceptionRequest
 import org.joda.time.DateTime
@@ -18,9 +17,15 @@ import org.yli.littlespy.utilities.dumpStack
 import java.util.*
 
 /**
+ * LittleSpy is used to dump the stack and memory status to files.
+ *
+ * @param debugPort JDPA debugging port.
+ * @param config the configuration of LittleSpy.
+ *
+ * @see LittleSpyConfig
+ *
  * Created by yli on 5/21/2016.
  */
-
 class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyConfig()) {
 
     val LOGGER = LoggerFactory.getLogger(javaClass)
@@ -35,12 +40,17 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
 
     var listeningThread : Thread? = null
 
-    val forPattern = DateTimeFormat.forPattern("yyyy_MM_dd_H_m_s")
+    val forPattern = DateTimeFormat.forPattern("yyyy_MM_dd_H_m_s_S")
+
+    val exceptionRequestMap : MutableMap<String, ExceptionRequest> = mutableMapOf()
 
     init {
         LOGGER.debug("LittleSpy was just created.")
     }
 
+    /**
+     * Start the spy.
+     */
     @Throws(LittleSpyException::class)
     fun start() {
         if (vm != null || attachConnector != null) {
@@ -56,6 +66,9 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
         vm!!.resume()
     }
 
+    /**
+     * Stop the spy.
+     */
     @Throws(LittleSpyException::class)
     fun stop() {
         try {
@@ -107,22 +120,19 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
             throw LittleSpyException("VirtualMachine is not attached. Stop the event setup")
         }
 
-        // dump memory when exception throws
-        // NOTE: apy attention, only loaded exception could be detected by VirtualMachine
+        // the exception class may not be loaded
         for (exceptionClassName in config.getExceptionList()) {
-            var refTypes = vm!!.classesByName(exceptionClassName)
+            val cpr = vm!!.eventRequestManager().createClassPrepareRequest()
+            cpr.addClassFilter(exceptionClassName)
+            cpr.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
+            cpr.isEnabled = true
+        }
 
-            if (refTypes.isEmpty()) {
-                tryToLoadClass(exceptionClassName)
-                refTypes = vm!!.classesByName(exceptionClassName)
-            }
-
-            for (refType in refTypes) {
-                val er = vm!!.eventRequestManager().createExceptionRequest(refType, true, true)
-                er.setSuspendPolicy(EventRequest.SUSPEND_ALL)
-                er.enable()
-
-                LOGGER.debug("exception $exceptionClassName request is enabled.")
+        for (exceptionClass in config.getExceptionList()) {
+            val types = vm!!.classesByName(exceptionClass)
+            for (type in types) {
+                val er = createExceptionRequest(vm, type)
+                exceptionRequestMap.put(exceptionClass, er)
             }
         }
 
@@ -131,7 +141,8 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
         val runnable = Runnable {
             LOGGER.debug("event listening thread is started.")
 
-            while (!Thread.interrupted()) {
+            var stopped = false
+            while (!stopped || !Thread.interrupted()) {
                 var eventSet : EventSet? = null
 
                 try {
@@ -158,137 +169,52 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
                     }
 
                     if (event is ExceptionEvent) {
-                        // vm!!.suspend()
-                        // suspendAllThreads()
-
-                        var name = (event.request() as ExceptionRequest)!!.exception().name()
-                        LOGGER.debug("exception $name is caught!")
-                        LOGGER.debug("catch location is ${event.catchLocation()}")
-
-                        dumpHeapAndStack()
-
-                        // resumeAllThreads()
-                        // vm!!.resume()
+                        LOGGER.debug("Caught ExceptionEvent " + event)
+                        val request = event.request()
+                        when (request) {
+                            is ExceptionRequest -> {
+                                LOGGER.debug("Exception class is " + request.exception().name())
+                                dumpHeapAndStack(request.exception().name())
+                            }
+                            else -> LOGGER.debug("not exception request")
+                        }
+                    } else if (event is ClassPrepareEvent) {
+                        LOGGER.debug("Caught ClassPrepareEvent for " + event.referenceType())
+                        val rt = event.referenceType()
+                        createExceptionRequest(vm, rt)
+                    } else if (event is VMDisconnectEvent || event is VMDeathEvent) {
+                        stopped = true
                     }
                 }
 
-                // if (resume) {
-                eventSet.resume()
-                // }
+                if (resume) {
+                    eventSet.resume()
+                }
             }
         }
 
         listeningThread = Thread(runnable)
-        listeningThread!!.name = "event listening"
+        listeningThread!!.name = "littlespy event listening"
         listeningThread!!.start()
 
         Thread.sleep(1000)
     }
 
-
-    private fun tryToLoadClass(exceptionClassName: String) {
-        var mainThread : ThreadReference? = null
-        for (thread in vm!!.allThreads()) {
-            if ("main".equals(thread.name())) {
-                mainThread = thread
-                break
-            }
-        }
-        
-        val classLoaders : MutableSet<ClassLoaderReference> = mutableSetOf()
-        for (classRef in vm!!.allClasses()) {
-            val element = classRef.classLoader()
-            if (element != null) {
-                classLoaders.add(element)
-            }
-        }
-
-        val classLoaderClasses : MutableSet<ReferenceType> = mutableSetOf()
-
-        val classLoaderNames = Lists.newArrayList<String>(
-                "java.lang.ClassLoader", "java.security.SecureClassLoader",
-                "sun.misc.Launcher\$AppClassLoader", "sun.misc.Launcher\$ExtClassLoader",
-                "java.net.URLClassLoader")
-
-        for (name in classLoaderNames) {
-            val classesByName = vm!!.classesByName(name)
-            if (!classesByName.isEmpty()) {
-                for (aClass in classesByName) {
-                    classLoaderClasses.add(aClass)
-                }
-            }
-        }
-
-        for (classLoaderClass in classLoaderClasses) {
-            val methodsByName = classLoaderClass.methodsByName("loadClass", "(Ljava/lang/String;Z)Ljava/lang/Class;")
-
-            val instances = classLoaderClass.instances(20)
-
-            for (instance in instances) {
-                for (method in methodsByName) {
-                    var arguments = ArrayList<Value>()
-                    arguments.add(vm!!.mirrorOf(exceptionClassName))
-                    arguments.add(vm!!.mirrorOf(true))
-
-                    try {
-                        var thread = instance.owningThread()
-
-                        if (thread == null) {
-                            thread = mainThread
-                        }
-
-                        instance.invokeMethod(thread, method, arguments, 0)
-                    } catch (e: Throwable) {
-                        // swallow the exceptions
-                        LOGGER.debug("this method doesn't match", e)
-                    }
-                }
-            }
-        }
-
-        for (classLoaderRef in classLoaders) {
-            val referenceType = classLoaderRef.referenceType()
-            val methodsByName = referenceType.methodsByName("loadClass", "(Ljava/lang/String;Z)Ljava/lang/Class;")
-
-            for (method in methodsByName) {
-                var arguments = ArrayList<Value>()
-                arguments.add(vm!!.mirrorOf(exceptionClassName))
-                arguments.add(vm!!.mirrorOf(true))
-
-                try {
-                    var thread = classLoaderRef.owningThread()
-
-                    if (thread == null) {
-                        thread = mainThread
-                    }
-                    classLoaderRef.invokeMethod(thread, method, arguments, 0)
-                } catch (e: Throwable) {
-                    // swallow the exception
-                    LOGGER.debug("this method doesn't match", e)
-                }
-            }
-        }
-    }
-
-    private fun dumpHeapAndStack() {
+    private fun dumpHeapAndStack(exception: String = "") {
         val now = DateTime.now()
-        LOGGER.debug("dump heap file")
-        Utilities.dumpHeap(config.folderPathForDumpFiles, forPattern.print(now))
+        LOGGER.debug("dump heap for exception: " + exception)
+        Utilities.dumpHeap(config.folderPathForDumpFiles, exception + "_" + forPattern.print(now))
 
-        LOGGER.debug("dump stack file")
-        Utilities.dumpStack(vm, config.folderPathForDumpFiles, forPattern.print(now))
+        LOGGER.debug("dump stack for exception: " + exception)
+        Utilities.dumpStack(vm, config.folderPathForDumpFiles, exception + "_" + forPattern.print(now))
     }
 
-    private fun resumeAllThreads() {
-        for (thread in vm!!.allThreads()) {
-            thread.resume()
-        }
-    }
+    private fun createExceptionRequest(vm: VirtualMachine?, refType: ReferenceType): ExceptionRequest {
+        LOGGER.debug("Create exception request for " + refType)
+        val er = vm!!.eventRequestManager().createExceptionRequest(refType, true, true)
+        er.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
+        er.isEnabled = true
 
-    private fun suspendAllThreads() {
-        for (thread in vm!!.allThreads()) {
-            thread.suspend()
-        }
+        return er
     }
-
 }

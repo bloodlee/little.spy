@@ -3,6 +3,10 @@ package org.yli.littlespy
 /**
  * Configuration of {@link LittleSpy}.
  *
+ * @param dumpStack to dump stack information or not
+ * @param autoDumpWhenExceptionHappen to automatically dump when exception or not.
+ * @param exceptionClassList the list of monitored exception class.
+ *
  * Created by yli on 5/21/2016.
  */
 class LittleSpyConfig(val dumpStack : Boolean = true,

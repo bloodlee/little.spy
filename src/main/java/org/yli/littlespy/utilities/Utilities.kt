@@ -12,8 +12,11 @@ import org.yli.littlespy.domain.ThreadInfo
 import org.yli.littlespy.domain.VariableInfo
 import java.io.File
 import java.lang.management.ManagementFactory
+import java.nio.charset.Charset
 
 /**
+ * {@link Utilities} to help to dumy the heap and the stack.
+ *
  * Created by yli on 5/22/2016.
  */
 class Utilities {
@@ -22,6 +25,14 @@ class Utilities {
     }
 }
 
+/**
+ * Dump heap. <br\>
+ *
+ * It depends on Hotspot VM's API.
+ *
+ * @param folderPath the folder's path.
+ * @param filePrefix the file's prefix.
+ */
 fun Utilities.Companion.dumpHeap(folderPath: String, filePrefix: String) {
     val platformMBeanServer = ManagementFactory.getPlatformMBeanServer()
     val bean = ManagementFactory.newPlatformMXBeanProxy(platformMBeanServer,
@@ -33,13 +44,30 @@ fun Utilities.Companion.dumpHeap(folderPath: String, filePrefix: String) {
     bean.dumpHeap(heapFile.absolutePath, true)
 }
 
+/**
+ * Dump the stack. <br/>
+ *
+ * @param vm the virtual machine.
+ * @param folderPath the folder's path.
+ * @param filePrefix the file's prefix.
+ *
+ * @see VirtualMachine
+ */
 fun Utilities.Companion.dumpStack(vm: VirtualMachine?, folderPath: String, filePrefix: String) {
     val stackMemory = StackMemory()
-    vm!!.allThreads().forEach { th -> th.suspend() }
+    vm!!.allThreads().forEach { th ->
+        if (!th.name().equals("littlespy event listening")) {
+            th.suspend()
+        }
+    }
 
     LOGGER.debug("Threads count ${vm!!.allThreads().size}")
     for (aThread in vm!!.allThreads()) {
         LOGGER.debug("Thread ${aThread.name()} is ${aThread.isSuspended}.")
+
+        if (!aThread.isSuspended) {
+            continue
+        }
 
         val thread = ThreadInfo(aThread.name())
 
@@ -47,27 +75,49 @@ fun Utilities.Companion.dumpStack(vm: VirtualMachine?, folderPath: String, fileP
             LOGGER.debug("frame count ${aThread.frames().size}")
             for (aFrame in aThread.frames()) {
                 val location = aFrame.location()
-                val frame = FrameInfo(location.sourcePath(), location.method().name(), location.lineNumber())
 
-                LOGGER.debug("var count ${frame.variables.size}")
-                for (aVar in aFrame.visibleVariables()) {
-                    val variable = VariableInfo(aVar.name(), aVar.typeName(), aFrame.getValue(aVar).toString())
+                var frame: FrameInfo? = null
+                try {
+                    frame = FrameInfo(location.sourcePath(), location.method().name(), location.lineNumber())
 
-                    frame.variables.add(variable)
+                    LOGGER.debug("frame ${frame}")
+
+                    if (aFrame.visibleVariables() == null) {
+                        continue
+                    }
+
+                    LOGGER.debug("var count ${aFrame.visibleVariables().size}")
+                    for (aVar in aFrame.visibleVariables()) {
+                        val varValue = aFrame.getValue(aVar)
+
+                        val variable = VariableInfo(aVar.name(), aVar.typeName(),
+                                varValue?.toString() ?: "null")
+
+                        frame.variables.add(variable)
+                    }
+                } catch (e: AbsentInformationException) {
+                    LOGGER.debug("skip this frame and go the next one.")
                 }
 
-                thread.frames.add(frame)
+                if (frame != null) {
+                    thread.frames.add(frame)
+                }
             }
         } catch (e: AbsentInformationException) {
+            LOGGER.debug(e.message, e)
             continue
         }
 
         stackMemory.threads.add(thread)
     }
 
-    vm!!.allThreads().forEach { th -> th.resume() }
+    vm!!.allThreads().forEach { th ->
+        while (th.suspendCount() > 0) {
+            th.resume()
+        }
+    }
 
     val heapFile = File(folderPath, filePrefix + "_stack.json")
     LOGGER.debug("stack file is dump to ${heapFile.absoluteFile}")
-    FileUtils.writeStringToFile(heapFile, Gson().toJson(stackMemory))
+    FileUtils.writeStringToFile(heapFile, Gson().toJson(stackMemory), Charset.defaultCharset())
 }
