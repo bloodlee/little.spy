@@ -1,0 +1,15 @@
+group 'org.yli.java'
+version '1.0-SNAPSHOT'
+rootProject.name = 'rxjava.learn'
+
+ext.kotlin_version = '1.0.5'
+
+apply plugin: "kotlin"
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+}

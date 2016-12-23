@@ -55,11 +55,6 @@ fun Utilities.Companion.dumpHeap(folderPath: String, filePrefix: String) {
  */
 fun Utilities.Companion.dumpStack(vm: VirtualMachine?, folderPath: String, filePrefix: String) {
     val stackMemory = StackMemory()
-    vm!!.allThreads().forEach { th ->
-        if (!th.name().equals("littlespy event listening")) {
-            th.suspend()
-        }
-    }
 
     LOGGER.debug("Threads count ${vm!!.allThreads().size}")
     for (aThread in vm!!.allThreads()) {
@@ -109,12 +104,6 @@ fun Utilities.Companion.dumpStack(vm: VirtualMachine?, folderPath: String, fileP
         }
 
         stackMemory.threads.add(thread)
-    }
-
-    vm!!.allThreads().forEach { th ->
-        while (th.suspendCount() > 0) {
-            th.resume()
-        }
     }
 
     val heapFile = File(folderPath, filePrefix + "_stack.json")

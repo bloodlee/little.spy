@@ -1,10 +1,8 @@
 package org.yli.littlespy
 
-import com.google.common.collect.Lists
 import com.sun.jdi.*
 import com.sun.jdi.connect.AttachingConnector
 import com.sun.jdi.event.*
-import com.sun.jdi.request.ClassPrepareRequest
 import com.sun.jdi.request.EventRequest
 import com.sun.jdi.request.ExceptionRequest
 import org.joda.time.DateTime
@@ -14,7 +12,6 @@ import org.yli.littlespy.exceptions.LittleSpyException
 import org.yli.littlespy.utilities.Utilities
 import org.yli.littlespy.utilities.dumpHeap
 import org.yli.littlespy.utilities.dumpStack
-import java.util.*
 
 /**
  * LittleSpy is used to dump the stack and memory status to files.
@@ -123,8 +120,8 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
         // the exception class may not be loaded
         for (exceptionClassName in config.getExceptionList()) {
             val cpr = vm!!.eventRequestManager().createClassPrepareRequest()
-            cpr.addClassFilter(exceptionClassName)
-            cpr.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
+            cpr.addClassFilter(exceptionClassName + "*")
+            cpr.setSuspendPolicy(EventRequest.SUSPEND_ALL)
             cpr.isEnabled = true
         }
 
@@ -159,18 +156,14 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
                     continue
                 }
 
-                var resume = false
+                LOGGER.debug("size of event set ${eventSet.size}")
+
                 for (event in eventSet) {
                     val request = event.request()
 
-                    if (request != null) {
-                        var eventPolicy = request.suspendPolicy()
-                        resume = resume || (eventPolicy != EventRequest.SUSPEND_NONE)
-                    }
-
                     if (event is ExceptionEvent) {
                         LOGGER.debug("Caught ExceptionEvent " + event)
-                        val request = event.request()
+
                         when (request) {
                             is ExceptionRequest -> {
                                 LOGGER.debug("Exception class is " + request.exception().name())
@@ -181,15 +174,17 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
                     } else if (event is ClassPrepareEvent) {
                         LOGGER.debug("Caught ClassPrepareEvent for " + event.referenceType())
                         val rt = event.referenceType()
-                        createExceptionRequest(vm, rt)
+                        if (!exceptionRequestMap.contains(rt.name())) {
+                            var er = createExceptionRequest(vm, rt)
+                            exceptionRequestMap.put(rt.name(), er)
+                        }
                     } else if (event is VMDisconnectEvent || event is VMDeathEvent) {
                         stopped = true
                     }
                 }
 
-                if (resume) {
-                    eventSet.resume()
-                }
+                LOGGER.debug("Event set resume")
+                eventSet.resume()
             }
         }
 
@@ -212,7 +207,7 @@ class LittleSpy(val debugPort : Int, val config : LittleSpyConfig = LittleSpyCon
     private fun createExceptionRequest(vm: VirtualMachine?, refType: ReferenceType): ExceptionRequest {
         LOGGER.debug("Create exception request for " + refType)
         val er = vm!!.eventRequestManager().createExceptionRequest(refType, true, true)
-        er.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD)
+        er.setSuspendPolicy(EventRequest.SUSPEND_ALL)
         er.isEnabled = true
 
         return er
