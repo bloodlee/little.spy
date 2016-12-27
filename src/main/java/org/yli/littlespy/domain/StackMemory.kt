@@ -7,6 +7,9 @@ package org.yli.littlespy.domain
  */
 class StackMemory {
     val threads : MutableList<ThreadInfo> = mutableListOf()
+    override fun toString(): String {
+        return "StackMemory(threads=$threads)"
+    }
 }
 
 /**
@@ -14,6 +17,9 @@ class StackMemory {
  */
 class ThreadInfo(val name: String) {
     var frames : MutableList<FrameInfo> = mutableListOf()
+    override fun toString(): String {
+        return "ThreadInfo(name='$name', frames=$frames)"
+    }
 }
 
 /**
@@ -32,4 +38,7 @@ class FrameInfo(val sourcePath: String, val methodName: String, val lineNumber: 
  * Information of a variable of a frame of a thread.
  */
 class VariableInfo(val name: String, val type: String, val value: String){
+    override fun toString(): String {
+        return "VariableInfo(name='$name', type='$type', value='$value')"
+    }
 }

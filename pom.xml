@@ -110,6 +110,11 @@
             <version>3.8.2</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>no.tornado</groupId>
+            <artifactId>tornadofx</artifactId>
+            <version>1.5.9</version>
+        </dependency>
     </dependencies>
 
     <properties>
