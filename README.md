@@ -1,6 +1,6 @@
 LittleSpy
 =========
-An utility to generate the runtime stack memory and heap memory of a Java application when exception happens.
+A utility to generate the runtime stack memory and heap memory of a Java application when exception happens.
 It supports HotSpot VM and built upon JDI (Java Debug Interface). 
 
 Stack Memory
